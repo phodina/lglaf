@@ -382,6 +382,7 @@ class USBCommunication(Communication):
                 custom_match = self._match_device)
         if self.usbdev is None:
             raise RuntimeError("USB device not found")
+        self.usbdev.reset()
 
         cr_device = kilo_lg_product_ids.get(self.usbdev.idProduct,'')
         _logger.debug("product id in CR list: >%s<", cr_device)
