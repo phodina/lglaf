@@ -1,10 +1,14 @@
+# WARNING
+
+This is currently a work-in-progress especially for WRITING
+
+
 # LGLAF.py
 LGLAF.py is a utility for communication with LG devices in Download Mode. This
 allows you to execute arbitrary shell commands on a LG phone as root.
 
 Contents of this repository:
 
- - [auth.py](auth.py) - challenge/response on newer devices (see below).
  - [lglaf.py](lglaf.py) - main script for communication (see below).
  - [partitions.py](partitions.py) - manage (list / read / write) partitions.
  - [extract-partitions.py](extract-partitions.py) - Dump all partitions
@@ -19,12 +23,14 @@ Contents of this repository:
 ## Requirements
 LGLAF.py depends on:
 
- - Python 2.7 or 3: https://www.python.org/
+ - Python 3: https://www.python.org/
  - (Windows) LG driver,
-   [LGMobileDriver\_WHQL\_Ver\_4.0.3.exe](http://18d5a.wpc.azureedge.net/8018D5A/tool/dn/downloader.dev?fileKey=UW00120120425)
-   (12986920 bytes,
-   sha256sum: 86e893b7f5da7f7d2656d9ce2563f082271983bb63903d0ed5cb279c560db459)
+   [LGMobileDriver\_WHQL\_Ver\_4.2.0.exe](http://oceanhost.eu/wylc5rg7a8ou/LGMobileDriver_WHQL_Ver_4.2.0.exe.htm)
+   (16691672 bytes,
+   sha256sum: d78ae6dfe7d34b9cabb8c4de5c6e734b6fed20b513d0da0183871bd77abba56c),
+   **WARNING**: This file was found via google search, it's not downloaded directly from LG servers
  - (Linux) PyUSB: https://walac.github.io/pyusb/
+ - Cryptography library: https://cryptography.io/en/latest/
 
 On Linux, you must also install
 [rules.d/42-usb-lglaf.rules](rules.d/42-usb-lglaf.rules) to `/etc/udev/rules.d/`
@@ -37,6 +43,7 @@ Tested with:
  - LG G2 (VS985).
  - LG G4 (VS986) on Linux (Python 3.5) and Windows.
  - LG G4 (H810,H811,H812,H815) on 64 bit Arch Linux | [FWUL](https://tinyurl.com/FWULatXDA) (Python 2.7.13, pyusb 1.0.0-5, libusb 1.0.21-2)
+ - LG K10 2017 (M250N) on Linux (Both Python 2.7.13 and Python 3.5.3).
 
 ## Usage
 This tool provides an interactive shell where you can execute commands in
@@ -61,13 +68,6 @@ Now you can issue commands using the interactive shell:
     # cat /proc/version
     Linux version 3.4.0-perf-gf95c7ee (lgmobile@LGEARND12B2) (gcc version 4.8 (GCC) ) #1 SMP PREEMPT Tue Aug 18 19:25:04 KST 2015
     # exit
-
-Some devices require a challenge/response before communication is possible (only needed once after entering download mode):
-
-    (venv)[peter@al lglaf]$ python auth.py --debug
-    LGLAF.py: DEBUG: Using endpoints 83 (IN), 02 (OUT)
-    auth: DEBUG: Challenge: c4:af:ff:aa
-    auth: DEBUG: Response: 12:7a:c2:c2:87:0e:06:5d:a2:a4:c3:8c:a2:12:12:12
 
 When commands are piped to stdin (or given via `-c`), the prompt is hidden:
 

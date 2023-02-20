@@ -308,7 +308,7 @@ def read_gpt_header(fp, lba_size=512):
   data = fp.read(struct.calcsize(fmt))
   header = GPTHeader._make(struct.unpack(fmt, data))
   if header.signature != b'EFI PART':
-    raise GPTMissing('Bad GPT signature')
+    return 'Bad GPT signature'
   revision = header.revision_major + (header.revision_minor / 10)
   if revision < 1.0:
     raise GPTError('Bad GPT revision: {0}.{1}'.format(header.revision_major, header.revision_minor))
@@ -370,7 +370,7 @@ def get_mbr_info(disk):
     return None
 
 
-def get_gpt_info(disk):
+def get_gpt_info(disk, blocksize):
   check_disk_file(disk)
   disk.seek(0)
   info = {
@@ -389,13 +389,6 @@ def get_gpt_info(disk):
     'crc32_part_array': None,
     'partitions': [],
   }
-  # EDIT by tuxuser: we are only working with datachunks, not real block devices
-  # Using hardcoded LBA size for usage by LGLAF
-  #try:
-  #  blocksize = struct.unpack('i', ioctl(disk.fileno(), 4608 | 104, struct.pack('i', -1)))[0]
-  #except:
-  #  blocksize = 512
-  blocksize = 512
   try:
     info['lba_size'] = blocksize
     gptheader = read_gpt_header(disk, lba_size=blocksize)
@@ -409,14 +402,14 @@ def get_gpt_info(disk):
     return None
 
 
-def get_disk_partitions_info(disk):
+def get_disk_partitions_info(disk, blocksize):
   check_disk_file(disk)
-  return namedtuple('DiskInfo', 'mbr, gpt')(get_mbr_info(disk), get_gpt_info(disk))
+  return namedtuple('DiskInfo', 'mbr, gpt')(get_mbr_info(disk), get_gpt_info(disk, blocksize))
 
-def show_disk_partitions_info(diskOrInfo, batch=False):
+def show_disk_partitions_info(diskOrInfo, blocksize, dev, batch=False, fmtdict=False, showheader=True):
   fileUsed = None
   if hasattr(diskOrInfo, 'read'):
-    info = get_disk_partitions_info(diskOrInfo)
+    info = get_disk_partitions_info(diskOrInfo, blocksize)
   else:
     info = diskOrInfo
 
@@ -433,22 +426,27 @@ def show_disk_partitions_info(diskOrInfo, batch=False):
     print('No MBR')
   if info.gpt:
     gpt = info.gpt
-    if batch:
-      _logger.debug("Name:Partition(#):From(#s):To(#s):UID")
-    else:
-      print('GPT Header')
-      print('Disk GUID: {0}'.format(gpt.disk_guid))
-      print('LBA size (sector size): {0}'.format(gpt.lba_size))
-      print('GPT First LBA: {0}'.format(gpt.current_lba))
-      print('GPT Last  LBA: {0}'.format(gpt.backup_lba))
-      print('Number of GPT partitions: {0}'.format(len(gpt.partitions)))
-      print('#   Flags From(#s)   To(#s)     GUID/UID                             Type/Name')
+    t_dict ={}
+    t_header =  'GPT Header' + \
+                '\nDisk GUID: {0}'.format(gpt.disk_guid) + \
+                '\nDevice: {0}'.format(dev) + \
+                '\nLBA size (sector size): {0}'.format(gpt.lba_size) + \
+                '\nGPT First LBA: {0}'.format(gpt.current_lba) + \
+                '\nGPT Last  LBA: {0}'.format(gpt.backup_lba) + \
+                '\nNumber of GPT partitions: {0}'.format(len(gpt.partitions)) + \
+                '\n\n#   From(#s)   To(#s)     GUID/UID                             Type/Name'
     for part in gpt.partitions:
-      if batch:
+      if fmtdict:
           size_kb = int(round((part.last_lba - part.first_lba +1) * gpt.lba_size / 1024,0))
-          print(('{name}:{n}:{from_s}:{to_s}:{uid}:{size_kb}').format(name=part.name, n=part.index, from_s=part.first_lba, to_s=part.last_lba, uid=part.uid, size_kb=size_kb))
+          t_dict[part.name] = { 'p_no': part.index, 'p_first_lba': part.first_lba, 'p_last_lba': part.last_lba, 'p_uid': part.uid, 'p_guid': part.guid, 'p_flags': part.flags, 'p_type': part.type,'p_size':size_kb }
       else:
-        print(('{n: <3} {flags: ^5} {from_s: <10} {to_s: <10} {guid} {type}\n' + ' ' * 32 + '{uid} {name}').format(n=part.index, flags=part.flags, from_s=part.first_lba, to_s=part.last_lba, guid=part.guid, type=part.type, uid=part.uid, name=part.name))
+          if batch:
+            size_kb = int(round((part.last_lba - part.first_lba +1) * gpt.lba_size / 1024,0))
+            print(('{name}:{n}:{from_s}:{to_s}:{uid}:{size_kb}').format(name=part.name, n=part.index, from_s=part.first_lba, to_s=part.last_lba, uid=part.uid, size_kb=size_kb))
+          else:
+            print(('{n: <3} {flags: ^5} {from_s: <10} {to_s: <10} {guid} {type}\n' + ' ' * 32 + '{uid} {name}').format(n=part.index, flags=part.flags, from_s=part.first_lba, to_s=part.last_lba, guid=part.guid, type=part.type, uid=part.uid, name=part.name))
+    if fmtdict:
+      return t_header,t_dict
   else:
     print('No GPT')
   if fileUsed:

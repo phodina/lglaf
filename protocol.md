@@ -308,10 +308,34 @@ Manipulate boot partition table (TODO: document this)
 ### FAIL
 Dummy command.
 
-### new versions
+## new versions (protocol >= 100004)
+
 TODO: document these commands added in some version:
 TOFF, COPY, SLEI, SIGN
 
+### GABS (A/B devices)
+
+get active boot slot (see SABS)
+
+### SABS (A/B devices)
+
+set the active boot slot on next boot.
+
+Arguments (arg1):
+ * 0 == A Slot
+ * 1 == B Slot
+
+### RGPT
+
+rollback GPT. Not sure of arguments yet.
+
+#### FTRI
+
+Compare model in payload to /SKUTable.cfg. My guess is this is used to stop LG UP from cross flashing. Useless for lglaf as far as I can tell.
+
+### ERRO
+
+Appears to restart lafd. 
 
 ## HDLC commands
 These are sent through the same interface, but have a different structure:

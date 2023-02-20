@@ -24,10 +24,83 @@ except ImportError:
 _logger = logging.getLogger("LGLAF.py")
 
 # Python 2/3 compat
-try: input = raw_input
-except: pass
-if '\0' == b'\0': int_as_byte = chr
-else: int_as_byte = lambda x: bytes([x])
+try:
+    input = raw_input
+except:
+    pass
+
+if '\0' == b'\0':
+    int_as_byte = chr
+else:
+    int_as_byte = lambda x: bytes([x])
+
+# laf crypto for KILO challenge/response
+try:
+    import laf_crypto
+except ImportError as e:
+    _logger.warning("LAF Crypto failed to import! Error: %s" % e)
+    pass
+
+# Use Manufacturer key for KILO challenge/response
+USE_MFG_KEY = False
+
+laf_error_codes = {
+    0x80000000: "FAILED",
+    0x80000001: "INVALID_PARAMETER",
+    0x80000002: "INVALID_HANDLE",
+    0x80000003: "DEVICE_NOT_SUPPORTED",
+    0x80000004: "INTERNAL_ERROR",
+    0x80000005: "TIMEOUT",
+    0x8000000F: "MORE_HEADER_DATA",
+    0x80000010: "MORE_DATA",
+    0x80000011: "INVALID_DATA",
+    0x80000012: "INVALID_DATA_LENGTH",
+    0x80000013: "INVALID_PACKET",
+    0x80000016: "CRC_CHECKSUM",
+    0x80000017: "CMD_CODE",
+    0x80000018: "OUTOFMEMORY",
+    0x80000105: "INVALID_NAME",
+    0x80000106: "NOT_CONNECTED",
+    0x80000107: "CANNOT_MAKE",
+    0x80000108: "FILE_NOT_FOUND",
+    0x80000109: "NOT_ENOUGH_QUOTA",
+    0x8000010a: "ACCESS_DENIED",
+    0x8000010c: "CANCELLED",
+    0x8000010d: "CONNECTION_ABORTED",
+    0x8000010e: "CONTINUE",
+    0x8000010f: "GEN_FAILURE",
+    0x80000110: "INCORRECT_ADDRESS",
+    0x80000111: "INVALID_CATEGORY",
+    0x80000112: "REQUEST_ABORTED",
+    0x80000113: "RETRY",
+    0x80000116: "DEVICE_NOT_AVAILABLE",
+    0x80000201: "IDT_MISMATCH_MODELNAME",
+    0x80000202: "IDT_DECOMPRES_FAILED",
+    0x80000203: "IDT_INVALID_OPTION",
+    0x80000204: "IDT_DECOMPRESS_END_FAILED",
+    0x80000205: "IDT_DZ_HEADER",
+    0x80000206: "IDT_RETRY_COUNT",
+    0x80000207: "IDT_HEADER_SIZE",
+    0x80000208: "IDT_TOT_MAGIC",
+    0x80000209: "UDT_DZ_HEADER_SIZE",
+    0x80000302: "INVALID_RESPONSE",
+    0x80000305: "FAILED_INSERT_QUEUE",
+    0x80000306: "FAILED_POP_QUEUE",
+    0x80000307: "INVALID_LAF_PROTOCOL",
+    0x80000308: "ERASE_FAILED",
+    0x80000309: "WEBFLAG_RESET_FAIL",
+    0x80000401: "FLASHING_FAIL",
+    0x80000402: "SECURE_FAIL",
+    0x80000403: "BUILD_TYPE_FAIL",
+    0x80000404: "CHECK_USER_SPC",
+    0x80000405: "FBOOT_CHECK_FAIL",
+    0x80000406: "INIT_FAIL",
+    0x80000407: "FRST_FLAG_FAIL",
+    0x80000408: "POWER_OFF_FAIL",
+    0x8000040a: "PRL_READ_FAIL",
+    0x80000409: "PRL_WRITE_FAIL",
+}
+
 
 # laf crypto for KILO challenge/response
 try:
@@ -38,8 +111,13 @@ except ImportError:
 
 # Use Manufacturer key for KILO challenge/response
 USE_MFG_KEY = False
-# HELO command always sends BASE Protocol version
+
+# The base protocol version. Do *not* change this!
+# lglaf will auto negotiate the minimal protocol version for you
+# but if for any reason you want to enforce a specific version
+# start lglaf with "--proto" to force another version
 BASE_PROTOCOL_VERSION = 0x1000001
+DEFAULT_PROTOCOL_VERSION = BASE_PROTOCOL_VERSION
 
 # all product ids which requires challenge response / KILO
 kilo_lg_product_ids = {
@@ -233,6 +311,7 @@ class Communication(object):
     def __init__(self):
         self.read_buffer = b''
         self.protocol_version = 0
+        self.protocol_negotiation = False
     def read(self, n, timeout=None):
         """Reads exactly n bytes."""
         need = n - len(self.read_buffer)
@@ -253,11 +332,12 @@ class Communication(object):
         raise NotImplementedError
     def reset(self):
         self.read_buffer = b''
-    def call(self, payload):
+    def call(self, payload, timeout=None):
         """Sends a command and returns its response."""
         validate_message(payload)
         self.write(payload)
-        header = self.read(0x20)
+        _logger.debug("using timeout value of: %s", timeout)
+        header = self.read(0x20,timeout=timeout)
         validate_message(header, ignore_crc=True)
         cmd = header[0:4]
         size = struct.unpack_from('<I', header, 0x14)[0]
@@ -275,9 +355,14 @@ class FileCommunication(Communication):
     def __init__(self, file_path):
         super(FileCommunication, self).__init__()
         if sys.version_info[0] >= 3:
-            self.f = open(file_path, 'r+b', buffering=0)
+            self.f = open("\\\\.\\"+file_path, 'r+b', buffering=0)
         else:
-            self.f = open(file_path, 'r+b')
+            self.f = open("\\\\.\\"+file_path, 'r+b')
+
+        # FIXME: detect it like on USB:
+        self.CR_MODE = "forced"
+        self.CR_NEEDED=0
+
     def _read(self, n, timeout=None):
         return self.f.read(n)
     def write(self, data):
@@ -297,6 +382,7 @@ class USBCommunication(Communication):
                 custom_match = self._match_device)
         if self.usbdev is None:
             raise RuntimeError("USB device not found")
+        self.usbdev.reset()
 
         cr_device = kilo_lg_product_ids.get(self.usbdev.idProduct,'')
         _logger.debug("product id in CR list: >%s<", cr_device)
@@ -382,7 +468,7 @@ class USBCommunication(Communication):
 
 def challenge_response(comm, mode):
     request_kilo = make_request(b'KILO', args=[b'CENT', b'\0\0\0\0', b'\0\0\0\0', b'\0\0\0\0'])
-    kilo_header, kilo_response = comm.call(request_kilo)
+    kilo_header, kilo_response = comm.call(request_kilo, timeout=2000)
     kilo_challenge = kilo_header[8:12]
     _logger.debug("Challenge: %s" % binascii.hexlify(kilo_challenge))
     if USE_MFG_KEY:
@@ -398,16 +484,22 @@ def challenge_response(comm, mode):
     _logger.debug("KILO METR Response -> Header: %s, Body: %s" % (
         binascii.hexlify(metr_header), binascii.hexlify(metr_response)))
 
-def try_hello(comm):
+def try_hello(comm, DEV_PROTOCOL_VERSION=0x0):
     """
     Tests whether the device speaks the expected protocol. If desynchronization
     is detected, tries to read as much data as possible.
     """
     # Wait for at most 5 seconds for a response... it shouldn't take that long
     # and otherwise something is wrong.
+    no_negotiation = False
     HELLO_READ_TIMEOUT = 5000
-
-    hello_proto_version = struct.pack("<I", BASE_PROTOCOL_VERSION)
+    _logger.debug("BASE_PROTOCOL_VERSION: %06x" % BASE_PROTOCOL_VERSION)
+    _logger.debug("DEV_PROTOCOL_VERSION: %06x" % DEV_PROTOCOL_VERSION)
+    if DEV_PROTOCOL_VERSION != 0x0 and DEV_PROTOCOL_VERSION != BASE_PROTOCOL_VERSION:
+        _logger.debug("Switching protocol to %06x" % DEV_PROTOCOL_VERSION)
+        hello_proto_version = struct.pack("<I", DEV_PROTOCOL_VERSION)
+    else:
+        hello_proto_version = struct.pack("<I", BASE_PROTOCOL_VERSION)
     hello_request = make_request(b'HELO', args=[hello_proto_version])
     comm.write(hello_request)
     data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
@@ -424,8 +516,26 @@ def try_hello(comm):
             data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
         # Just to be sure, send another HELO request.
         comm.call(hello_request)
-    # Assign received protocol version
-    comm.protocol_version = struct.unpack_from('<I', data, 0x4)[0]
+
+    # Assign received (min) protocol version
+    protocol_version = struct.unpack_from('<I', data, 0x8)[0]
+    # when there is no min version reported force the oldest one
+    if protocol_version >= 268435457:
+        _logger.debug("No minimum version reported (hex: %x / bytes: %i) so we will use the predefined one (%x)" % (protocol_version, protocol_version, BASE_PROTOCOL_VERSION))
+        comm.protocol_version = BASE_PROTOCOL_VERSION
+        no_negotiation = True
+    else:
+        _logger.debug("Switching to minimum version reported by lafd")
+        comm.protocol_version = protocol_version
+
+    # inform when a negotiation is required
+    if no_negotiation or BASE_PROTOCOL_VERSION != DEFAULT_PROTOCOL_VERSION:
+        _logger.debug("Negotiation skipped")
+        comm.protocol_version = BASE_PROTOCOL_VERSION
+        comm.protocol_negotiation = False
+    else:
+        _logger.debug("Negotiation in-use")
+        comm.protocol_negotiation = True
 
 def detect_serial_path():
     try:
@@ -505,17 +615,32 @@ def chk_mode(pv,cr,cmode):
         cr_mode = 1
     return cr_mode
 
-parser = argparse.ArgumentParser(description='LG LAF Download Mode utility')
+
+class SmartFormatter(argparse.HelpFormatter):
+
+    def _split_lines(self, text, width):
+        if text.startswith('F|'):
+            return text[2:].splitlines()  
+        # this is the RawTextHelpFormatter._split_lines
+        return argparse.HelpFormatter._split_lines(self, text, width)
+
+parser = argparse.ArgumentParser(description='LG LAF Download Mode utility', formatter_class=SmartFormatter)
 parser.add_argument("--cr", choices=['yes', 'no'], help="Do initial challenge response (KILO CENT/METR)")
+parser.add_argument("--skip-hello", action="store_true", dest="skip_hello",
+        help="Immediately send commands, skip HELO message")
 parser.add_argument('--rawshell', action="store_true",
         help="Execute shell commands as-is, needed on recent devices. "
              "CAUTION: stderr output is not redirected!")
-
 parser.add_argument("-c", "--command", help='Shell command to execute')
 parser.add_argument("--serial", metavar="PATH", dest="serial_path",
         help="Path to serial device (e.g. COM4).")
 parser.add_argument("--debug", action='store_true', help="Enable debug messages")
-parser.add_argument("--proto", action='store_true', help="Just print LAF protocol version")
+parser.add_argument("--showproto", action='store_true', help="Just print the used LAF protocol version. Includes protocol negotiation.")
+parser.add_argument("--proto", nargs='?',
+        help="F|Forces a specific protocol version, skips protocol negotiation.\n \
+Format:\n\
+--proto 0x1000003 for version 3\n\
+--proto 0x1000018 for version 18")
 
 def main():
     args = parser.parse_args()
@@ -526,18 +651,37 @@ def main():
     try: stdout_bin = sys.stdout.buffer
     except: stdout_bin = sys.stdout
 
+    global BASE_PROTOCOL_VERSION
+    if args.proto:
+        pattern = re.compile("^0x1([0-9]{6,6})$")
+        if not pattern.match(args.proto):
+            _logger.error("Wrong format (%s) for protocol version! Check --help." % args.proto)
+            return
+        hex_proto = int(args.proto,16)
+        _logger.debug("WARNING: Forcing protocol to %x" % hex_proto)
+        BASE_PROTOCOL_VERSION = hex_proto
+    DEV_PROTOCOL_VERSION = BASE_PROTOCOL_VERSION
+
     if args.serial_path:
         comm = FileCommunication(args.serial_path)
     else:
         comm = autodetect_device(args.cr)
-
-    with closing(comm):
-        try_hello(comm)
-        _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
-        _logger.debug("CR detection: %i" % comm.CR_NEEDED)
+    
+    _logger.debug("Trying protocol version: %07x" % DEV_PROTOCOL_VERSION)
+    if not args.skip_hello:
+        try_hello(comm, DEV_PROTOCOL_VERSION)
         _logger.debug("Hello done, proceeding with commands")
 
-        if args.proto:
+        if comm.protocol_negotiation:
+            try_hello(comm, DEV_PROTOCOL_VERSION=comm.protocol_version)
+
+    _logger.debug("Negotiated protocol version: 0x%x" % comm.protocol_version)
+
+    with closing(comm):
+        _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
+        _logger.debug("CR detection: %i" % comm.CR_NEEDED)
+
+        if args.showproto:
             print("%x" % comm.protocol_version)
         else:    
           for command in get_commands(args.command):
