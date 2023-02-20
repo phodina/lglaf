@@ -551,7 +551,7 @@ parser.add_argument("--wipe", action='store_true',
 parser.add_argument("partition", nargs='?',
         help="Partition number (e.g. 1 for block device mmcblk0p1)"
         " or partition name (e.g. 'recovery')")
-parser.add_argument("--skip-hello", action="store_true",
+parser.add_argument("--skip-hello", action="store_true", dest="skip_hello",
         help="Immediately send commands, skip HELO message")
 parser.add_argument("--batch", action="store_true",
         help="Print partition list in machine readable output format")
@@ -602,10 +602,12 @@ def main():
     comm = lglaf.autodetect_device(args.cr)
     with closing(comm):
 
-        lglaf.try_hello(comm, lglaf.BASE_PROTOCOL_VERSION)
-        if comm.protocol_negotiation:
-            lglaf.try_hello(comm, DEV_PROTOCOL_VERSION=comm.protocol_version)
-            _logger.debug("Negotiated protocol version: 0x%x" % comm.protocol_version)
+        if not args.skip_hello:
+            lglaf.try_hello(comm, lglaf.BASE_PROTOCOL_VERSION)
+
+            if comm.protocol_negotiation:
+                lglaf.try_hello(comm, DEV_PROTOCOL_VERSION=comm.protocol_version)
+                _logger.debug("Negotiated protocol version: 0x%x" % comm.protocol_version)
         else:
             _logger.debug("Used protocol version: %07x" % comm.protocol_version)
 

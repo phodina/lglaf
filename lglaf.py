@@ -626,7 +626,7 @@ class SmartFormatter(argparse.HelpFormatter):
 
 parser = argparse.ArgumentParser(description='LG LAF Download Mode utility', formatter_class=SmartFormatter)
 parser.add_argument("--cr", choices=['yes', 'no'], help="Do initial challenge response (KILO CENT/METR)")
-parser.add_argument("--skip-hello", action="store_true",
+parser.add_argument("--skip-hello", action="store_true", dest="skip_hello",
         help="Immediately send commands, skip HELO message")
 parser.add_argument('--rawshell', action="store_true",
         help="Execute shell commands as-is, needed on recent devices. "
@@ -668,15 +668,18 @@ def main():
         comm = autodetect_device(args.cr)
     
     _logger.debug("Trying protocol version: %07x" % DEV_PROTOCOL_VERSION)
-    try_hello(comm, DEV_PROTOCOL_VERSION)
-    if comm.protocol_negotiation:
-        try_hello(comm, DEV_PROTOCOL_VERSION=comm.protocol_version)
-        _logger.debug("Negotiated protocol version: 0x%x" % comm.protocol_version)
+    if not args.skip_hello:
+        try_hello(comm, DEV_PROTOCOL_VERSION)
+        _logger.debug("Hello done, proceeding with commands")
+
+        if comm.protocol_negotiation:
+            try_hello(comm, DEV_PROTOCOL_VERSION=comm.protocol_version)
+
+    _logger.debug("Negotiated protocol version: 0x%x" % comm.protocol_version)
 
     with closing(comm):
         _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
         _logger.debug("CR detection: %i" % comm.CR_NEEDED)
-        _logger.debug("Hello done, proceeding with commands")
 
         if args.showproto:
             print("%x" % comm.protocol_version)
