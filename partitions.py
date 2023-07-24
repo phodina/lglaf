@@ -376,7 +376,7 @@ def write_partition(comm, disk_fd, local_path, part_offset, part_size, batch):
     # Sanity check
     assert part_offset >= GPT_LBA_LEN * BLOCK_SIZE, "Will not allow overwriting GPT scheme"
 
-    # disable RESTORE until newer LAF communication is fixed! this will not work atm!
+    # force disabling WRITE until newer LAF communication is working properly
     if hex(comm.protocol_version) == '0x1000001':
       with open_local_readable(local_path) as f:
         try:
@@ -705,6 +705,9 @@ def main():
         lglaf.BASE_PROTOCOL_VERSION = hex_proto
 
     comm = lglaf.autodetect_device(args.cr)
+    DEV_PROTOCOL_VERSION = lglaf.set_dev_proto(args, lglaf.BASE_PROTOCOL_VERSION)
+    lglaf.set_protocol(comm, args.proto, args.skip_hello, DEV_PROTOCOL_VERSION)
+
     with closing(comm):
 
         if not args.skip_hello:

@@ -660,6 +660,22 @@ Format:\n\
 --proto 0x1000003 for version 3\n\
 --proto 0x1000018 for version 18")
 
+
+def set_dev_proto(args, BASE_PROTOCOL_VERSION):
+    """
+    """
+
+    if args.proto:
+        pattern = re.compile("^0x1([0-9]{6,6})$")
+        if not pattern.match(args.proto):
+            _logger.error("Wrong format (%s) for protocol version! Check --help." % args.proto)
+            return
+        hex_proto = int(args.proto,16)
+        _logger.debug("WARNING: Forcing protocol to %x" % hex_proto)
+        BASE_PROTOCOL_VERSION = hex_proto
+
+    return BASE_PROTOCOL_VERSION
+
 def main():
     args = parser.parse_args()
     logging.basicConfig(format='%(name)s: %(levelname)s: %(message)s',
@@ -670,16 +686,7 @@ def main():
     except: stdout_bin = sys.stdout
 
     global BASE_PROTOCOL_VERSION
-    if args.proto:
-        pattern = re.compile("^0x1([0-9]{6,6})$")
-        if not pattern.match(args.proto):
-            _logger.error("Wrong format (%s) for protocol version! Check --help." % args.proto)
-            return
-        hex_proto = int(args.proto,16)
-        _logger.debug("WARNING: Forcing protocol to %x" % hex_proto)
-        BASE_PROTOCOL_VERSION = hex_proto
-
-    DEV_PROTOCOL_VERSION = BASE_PROTOCOL_VERSION
+    DEV_PROTOCOL_VERSION = set_dev_proto(args, BASE_PROTOCOL_VERSION)
 
     if args.serial_path:
         comm = FileCommunication(args.serial_path)
@@ -692,8 +699,8 @@ def main():
     if not args.skip_hello:
         _logger.debug("Hello done, proceeding with commands")
 
-        if comm.protocol_negotiation:
-            set_protocol(comm, args.proto, DEV_PROTOCOL_VERSION=comm.protocol_version)
+        #if comm.protocol_negotiation:
+        #    set_protocol(comm, args.proto, DEV_PROTOCOL_VERSION=comm.protocol_version)
 
     with closing(comm):
         _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
