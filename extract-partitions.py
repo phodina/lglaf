@@ -3,6 +3,8 @@
 # Dump partitions to file.
 #
 # Copyright (C) 2015 Peter Wu <peter@lekensteyn.nl>
+# Copyright (C) 2017-2023 steadfasterX <steadfasterX |AT| binbash #DOT# rocks>
+#
 # Licensed under the MIT license <http://opensource.org/licenses/MIT>.
 
 from contextlib import closing
@@ -23,6 +25,13 @@ parser.add_argument("--debug", action='store_true', help="Enable debug messages"
 parser.add_argument("--batch", action='store_true', help="Enable batch mode")
 parser.add_argument("--skip-hello", action="store_true",
         help="Immediately send commands, skip HELO message")
+parser.add_argument("--devtype", choices=['UFS', 'EMMC'],
+        help="Force the device type (UFS or EMMC)")
+parser.add_argument("--sign", metavar="LOCAL_PATH",
+        help="Send sign payload for signed writing ('-' for stdin)")
+parser.add_argument("partition", nargs='?',
+        help="Partition number (e.g. 1 for block device mmcblk0p1)"
+        " or partition name (e.g. 'recovery')")
 
 def dump_partitions(comm, disk_fd, outdir, max_size, batch):
     diskinfo = partitions.get_partitions(comm, disk_fd)
@@ -76,12 +85,14 @@ def main():
     comm = lglaf.autodetect_device(args.cr)
     with closing(comm):
         if not args.skip_hello:
-            lglaf.try_hello(comm)
+            lglaf.set_protocol(comm)
             _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
 
-        with partitions.laf_open_disk(comm) as disk_fd:
-            _logger.debug("Opened fd %d for disk", disk_fd)
-            dump_partitions(comm, disk_fd, args.outdir, args.max_size * 1024, args.batch)
+        devtype, part_header, part_table = partitions.detect_and_open_fd(comm, args)
+        dev, part_opener, filtered_ptable = partitions.list_filtered(part_table, args)
+        disk_fd = partitions.laf_open_disk(comm, part_opener)
+        _logger.debug("Opened fd %d for disk", disk_fd)
+        dump_partitions(comm, disk_fd, args.outdir, args.max_size * 1024, args.batch)
 
     if args.batch:
         print("#All finished")
