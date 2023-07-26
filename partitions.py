@@ -3,6 +3,8 @@
 # Manage a single partition (info, read, write).
 #
 # Copyright (C) 2015 Peter Wu <peter@lekensteyn.nl>
+# Copyright (C) 2017-2023 steadfasterX <steadfasterX |AT| binbash #DOT# rocks>
+#
 # Licensed under the MIT license <http://opensource.org/licenses/MIT>.
 
 from __future__ import print_function,division
@@ -374,7 +376,7 @@ def write_partition(comm, disk_fd, local_path, part_offset, part_size, batch):
     # Sanity check
     assert part_offset >= GPT_LBA_LEN * BLOCK_SIZE, "Will not allow overwriting GPT scheme"
 
-    # disable RESTORE until newer LAF communication is fixed! this will not work atm!
+    # force disabling WRITE until newer LAF communication is working properly
     if hex(comm.protocol_version) == '0x1000001':
       with open_local_readable(local_path) as f:
         try:
@@ -575,6 +577,109 @@ def close_fd(comm, fd_num):
         lglaf.challenge_response(comm, 4)
     comm.call(close_cmd)
 
+def detect_and_open_fd(comm, args):
+    """
+    detects the required disk opener
+    and 
+    """
+    part_header = {}
+    part_table = {}
+
+    for dev,opencmd in disk_opener.items():
+      disk_fd = laf_open_disk(comm, opencmd)
+      if disk_fd: 
+        _logger.debug("opened a disk_fd: %i on %s" % (disk_fd, dev))
+        # detect the device type and based on that set the block size and GPT LBA length
+        # atm we know just 2 block sizes, one for EMMC devices and one for UFS
+        # as those will likely not change in the near future I hardcode both here
+        global BLOCK_SIZE,GPT_LBA_LEN,MAX_BLOCK_SIZE
+        BLOCK_SIZE_UFS = 4096
+        BLOCK_SIZE_EMMC = 512
+        GPT_LBA_LEN_UFS = 6
+        GPT_LBA_LEN_EMMC = 34
+
+        # Note for calculating MAX_BLOCK_SIZE:
+        # On Linux, one bulk read returns at most 16 KiB. 32 bytes are part of the first
+        # header, so remove one block size (512 bytes) to stay within that margin.
+        # This ensures that whenever the USB communication gets out of sync, it will
+        # always start with a message header, making recovery easier.
+
+        if not args.devtype:
+            # as we are moving forward we expect UFS devices first(!)
+            BLOCK_SIZE = BLOCK_SIZE_UFS
+            GPT_LBA_LEN = GPT_LBA_LEN_UFS
+            MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
+            if check_block_size(comm, disk_fd):
+                devtype = "UFS"
+            else:
+                BLOCK_SIZE = BLOCK_SIZE_EMMC
+                GPT_LBA_LEN = GPT_LBA_LEN_EMMC
+                MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
+                if check_block_size(comm, disk_fd):
+                    devtype = "EMMC"
+                else:
+                    _logger("Cannot identify the block size!")
+                    raise
+        else:
+            if args.devtype == "UFS":
+                BLOCK_SIZE = BLOCK_SIZE_UFS
+                GPT_LBA_LEN = GPT_LBA_LEN_UFS
+                MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
+            else:
+                BLOCK_SIZE = BLOCK_SIZE_EMMC
+                GPT_LBA_LEN = GPT_LBA_LEN_EMMC
+                MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
+            devtype = args.devtype
+            if check_block_size(comm, disk_fd):
+                _logger.debug("enforced device type to: %s" % devtype)
+            else:
+                parser.error("Cannot identify the GPT header for the forced device type: %s!" % devtype)
+                raise
+
+        _logger.debug("GPT_LBA_LEN: %s", GPT_LBA_LEN)
+        _logger.debug("BLOCK_SIZE: %s (%s), MAX_BLOCK_SIZE: %s", BLOCK_SIZE, devtype, MAX_BLOCK_SIZE)
+
+        if args.sign:
+            fsig = open(args.sign, 'rb')
+            sign_payload = fsig.read()
+            laf_sign(comm, sign_payload)
+
+        # sda and default are identical - for reading at least.
+        # we skip sda for reading but not for anything else
+        if dev != "sda":
+            diskinfo = get_partitions(comm, disk_fd)
+            if args.batch:
+                part_header[dev],part_table[dev] = dict_partition_table(diskinfo, dev, showheader=False)
+            else:
+                part_header[dev],part_table[dev] = dict_partition_table(diskinfo, dev, showheader=True)
+        close_fd(comm,disk_fd)
+        if devtype == "EMMC": break
+      else: break
+    return devtype, part_header, part_table
+
+def list_filtered(part_table, args):
+    """
+    filter partition table dict for given part name
+    and identify the required disk opener
+    """
+    part_opener = None
+    filtered_ptable = None
+
+    for dev,p in part_table.items():
+        try:
+            if part_table[dev][args.partition]:
+                filtered_ptable = part_table[dev][args.partition]
+                part_opener = disk_opener[dev]
+                break
+            else: continue
+        except KeyError:
+            continue
+        except ValueError as e:
+            parser.error(e)
+    if part_opener is None:
+        part_opener = disk_opener['default']
+    return dev, part_opener, filtered_ptable
+
 def main():
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s %(name)s: %(levelname)s: %(message)s',
@@ -600,6 +705,9 @@ def main():
         lglaf.BASE_PROTOCOL_VERSION = hex_proto
 
     comm = lglaf.autodetect_device(args.cr)
+    DEV_PROTOCOL_VERSION = lglaf.set_dev_proto(args, lglaf.BASE_PROTOCOL_VERSION)
+    lglaf.set_protocol(comm, args.proto, args.skip_hello, DEV_PROTOCOL_VERSION)
+
     with closing(comm):
 
         if not args.skip_hello:
@@ -629,96 +737,13 @@ def main():
         elif args.lun == "sdg":
             lun = sdg_body
 
-        part_header = {}
-        part_table = {}
+        devtype, part_header, part_table = detect_and_open_fd(comm, args)
 
-        for dev,opencmd in disk_opener.items():
-          disk_fd = laf_open_disk(comm, opencmd)
-          if disk_fd: 
-            _logger.debug("opened a disk_fd: %i on %s" % (disk_fd, dev))
-            # detect the device type and based on that set the block size and GPT LBA length
-            # atm we know just 2 block sizes, one for EMMC devices and one for UFS
-            # as those will likely not change in the near future I hardcode both here
-            global BLOCK_SIZE,GPT_LBA_LEN,MAX_BLOCK_SIZE
-            BLOCK_SIZE_UFS = 4096
-            BLOCK_SIZE_EMMC = 512
-            GPT_LBA_LEN_UFS = 6
-            GPT_LBA_LEN_EMMC = 34
-
-            # Note for calculating MAX_BLOCK_SIZE:
-            # On Linux, one bulk read returns at most 16 KiB. 32 bytes are part of the first
-            # header, so remove one block size (512 bytes) to stay within that margin.
-            # This ensures that whenever the USB communication gets out of sync, it will
-            # always start with a message header, making recovery easier.
-
-            if not args.devtype:
-                # as we are moving forward we expect UFS devices first(!)
-                BLOCK_SIZE = BLOCK_SIZE_UFS
-                GPT_LBA_LEN = GPT_LBA_LEN_UFS
-                MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
-                if check_block_size(comm, disk_fd):
-                    devtype = "UFS"
-                else:
-                    BLOCK_SIZE = BLOCK_SIZE_EMMC
-                    GPT_LBA_LEN = GPT_LBA_LEN_EMMC
-                    MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
-                    if check_block_size(comm, disk_fd):
-                        devtype = "EMMC"
-                    else:
-                        _logger("Cannot identify the block size!")
-                        raise
-            else:
-                if args.devtype == "UFS":
-                    BLOCK_SIZE = BLOCK_SIZE_UFS
-                    GPT_LBA_LEN = GPT_LBA_LEN_UFS
-                    MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
-                else:
-                    BLOCK_SIZE = BLOCK_SIZE_EMMC
-                    GPT_LBA_LEN = GPT_LBA_LEN_EMMC
-                    MAX_BLOCK_SIZE = (16 * 1024 - BLOCK_SIZE) // BLOCK_SIZE
-                devtype = args.devtype
-                if check_block_size(comm, disk_fd):
-                    _logger.debug("enforced device type to: %s" % devtype)
-                else:
-                    parser.error("Cannot identify the GPT header for the forced device type: %s!" % devtype)
-                    raise
-
-            _logger.debug("GPT_LBA_LEN: %s", GPT_LBA_LEN)
-            _logger.debug("BLOCK_SIZE: %s (%s), MAX_BLOCK_SIZE: %s", BLOCK_SIZE, devtype, MAX_BLOCK_SIZE)
-
-            if args.sign:
-                fsig = open(args.sign, 'rb')
-                sign_payload = fsig.read()
-                laf_sign(comm, sign_payload)
-
-            # sda and default are identical - for reading at least.
-            # we skip sda for reading but not for anything else
-            if dev != "sda":
-                diskinfo = get_partitions(comm, disk_fd)
-                if args.batch:
-                    part_header[dev],part_table[dev] = dict_partition_table(diskinfo, dev, showheader=False)
-                else:
-                    part_header[dev],part_table[dev] = dict_partition_table(diskinfo, dev, showheader=True)
-            close_fd(comm,disk_fd)
-            if devtype == "EMMC": break
-          else: break
-
+        # list all or get a filtered partition list
         if args.list:
             list_partitions(part_header, part_table, args.partition, args.batch)
         else:
-            # filter partition table dict for given part name
-            # and identify the required disk opener
-            for dev,p in part_table.items():
-                try:
-                    if part_table[dev][args.partition]:
-                        filtered_ptable = part_table[dev][args.partition]
-                        part_opener = disk_opener[dev]
-                        break
-                    else: continue
-                except KeyError:
-                    continue
-                except ValueError as e:
-                    parser.error(e)
+            dev, part_opener, filtered_ptable = list_filtered(part_table, args)
 
             _logger.debug("Found partition on device: %s" % dev)
             part_offset = filtered_ptable['p_first_lba'] * BLOCK_SIZE

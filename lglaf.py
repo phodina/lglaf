@@ -3,6 +3,8 @@
 # Interactive shell for communication with LG devices in download mode (LAF).
 #
 # Copyright (C) 2015 Peter Wu <peter@lekensteyn.nl>
+# Copyright (C) 2017-2023 steadfasterX <steadfasterX |AT| binbash #DOT# rocks>
+#
 # Licensed under the MIT license <http://opensource.org/licenses/MIT>.
 
 from __future__ import print_function
@@ -441,7 +443,7 @@ class USBCommunication(Communication):
     def _match_interface(self, intf):
         return intf.bInterfaceClass == 255 and \
             intf.bInterfaceSubClass == 255 and \
-            intf.bInterfaceProtocol == 255 and \
+            intf.bInterfaceProtocol in [ 0, 255 ] and \
             intf.bNumEndpoints == 2 and all(
             usb.util.endpoint_type(ep.bmAttributes) ==
                 usb.util.ENDPOINT_TYPE_BULK
@@ -484,57 +486,73 @@ def challenge_response(comm, mode):
     _logger.debug("KILO METR Response -> Header: %s, Body: %s" % (
         binascii.hexlify(metr_header), binascii.hexlify(metr_response)))
 
-def try_hello(comm, DEV_PROTOCOL_VERSION=0x0):
+def set_protocol(comm, nego=None, hello=False, DEV_PROTOCOL_VERSION=0x0):
     """
-    Tests whether the device speaks the expected protocol. If desynchronization
-    is detected, tries to read as much data as possible.
+    sets the protocol either manually or tries to auto-detect it
+    will respect hello
     """
+
     # Wait for at most 5 seconds for a response... it shouldn't take that long
     # and otherwise something is wrong.
-    no_negotiation = False
     HELLO_READ_TIMEOUT = 5000
-    _logger.debug("BASE_PROTOCOL_VERSION: %06x" % BASE_PROTOCOL_VERSION)
-    _logger.debug("DEV_PROTOCOL_VERSION: %06x" % DEV_PROTOCOL_VERSION)
-    if DEV_PROTOCOL_VERSION != 0x0 and DEV_PROTOCOL_VERSION != BASE_PROTOCOL_VERSION:
-        _logger.debug("Switching protocol to %06x" % DEV_PROTOCOL_VERSION)
-        hello_proto_version = struct.pack("<I", DEV_PROTOCOL_VERSION)
-    else:
-        hello_proto_version = struct.pack("<I", BASE_PROTOCOL_VERSION)
-    hello_request = make_request(b'HELO', args=[hello_proto_version])
-    comm.write(hello_request)
-    data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
-    if data[0:4] != b'HELO':
-        # Unexpected response, maybe some stale data from a previous execution?
-        while data[0:4] != b'HELO':
-            try:
-                validate_message(data, ignore_crc=True)
-                size = struct.unpack_from('<I', data, 0x14)[0]
-                comm.read(size, timeout=HELLO_READ_TIMEOUT)
-            except RuntimeError: pass
-            # Flush read buffer
-            comm.reset()
-            data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
-        # Just to be sure, send another HELO request.
-        comm.call(hello_request)
 
-    # Assign received (min) protocol version
-    protocol_version = struct.unpack_from('<I', data, 0x8)[0]
-    # when there is no min version reported force the oldest one
-    if protocol_version >= 268435457:
-        _logger.debug("No minimum version reported (hex: %x / bytes: %i) so we will use the predefined one (%x)" % (protocol_version, protocol_version, BASE_PROTOCOL_VERSION))
-        comm.protocol_version = BASE_PROTOCOL_VERSION
+    if nego is not None:
         no_negotiation = True
     else:
-        _logger.debug("Switching to minimum version reported by lafd")
-        comm.protocol_version = protocol_version
+        no_negotiation = False
+
+    _logger.debug("BASE_PROTOCOL_VERSION: %06x" % BASE_PROTOCOL_VERSION)
+    _logger.debug("DEV_PROTOCOL_VERSION: %06x" % DEV_PROTOCOL_VERSION)
+
+    if DEV_PROTOCOL_VERSION != 0x0 and DEV_PROTOCOL_VERSION != BASE_PROTOCOL_VERSION:
+        _logger.debug("Switching protocol to %06x" % DEV_PROTOCOL_VERSION)
+        comm.protocol_version = DEV_PROTOCOL_VERSION
+        hello_proto_version = struct.pack("<I", DEV_PROTOCOL_VERSION)
+    else:
+        comm.protocol_version = BASE_PROTOCOL_VERSION
+        hello_proto_version = struct.pack("<I", BASE_PROTOCOL_VERSION)
+
+    if not hello:
+        _logger.debug("Using HELLO!")
+        hello_request = make_request(b'HELO', args=[hello_proto_version])
+        comm.write(hello_request)
+        data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
+        if data[0:4] != b'HELO':
+            # Unexpected response, maybe some stale data from a previous execution?
+            while data[0:4] != b'HELO':
+                try:
+                    validate_message(data, ignore_crc=True)
+                    size = struct.unpack_from('<I', data, 0x14)[0]
+                    comm.read(size, timeout=HELLO_READ_TIMEOUT)
+                except RuntimeError: pass
+                # Flush read buffer
+                comm.reset()
+                data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
+            # Just to be sure, send another HELO request.
+            comm.call(hello_request)
+
+        # Assign received (min) protocol version
+        protocol_version = struct.unpack_from('<I', data, 0x8)[0]
+        # when there is no min version reported force the oldest one
+        if protocol_version >= 268435457:
+            _logger.debug("No minimum version reported (hex: %x / bytes: %i) so we will use the predefined one (%x)" % (protocol_version, protocol_version, BASE_PROTOCOL_VERSION))
+            comm.protocol_version = BASE_PROTOCOL_VERSION
+            no_negotiation = True
+        else:
+            _logger.debug("Switching to minimum version reported by lafd")
+            comm.protocol_version = protocol_version
 
     # inform when a negotiation is required
     if no_negotiation or BASE_PROTOCOL_VERSION != DEFAULT_PROTOCOL_VERSION:
-        _logger.debug("Negotiation skipped")
-        comm.protocol_version = BASE_PROTOCOL_VERSION
+        if no_negotiation and nego is not None:
+            _logger.debug("Negotiation skipped, %s" % nego)
+            comm.protocol_version = int(nego,16)
+        else:
+            comm.protocol_version = BASE_PROTOCOL_VERSION
         comm.protocol_negotiation = False
     else:
         _logger.debug("Negotiation in-use")
+        _logger.debug("Negotiated protocol version: 0x%x" % comm.protocol_version)
         comm.protocol_negotiation = True
 
 def detect_serial_path():
@@ -573,7 +591,7 @@ def get_commands(command):
     if sys.stdin is None:
         raise RuntimeError('No console input available!')
     if sys.stdin.isatty():
-        print("LGLAF.py by Peter Wu (https://lekensteyn.nl/lglaf)\n"
+        print("LGLAF.py by steadfasterX + Peter Wu (https://lekensteyn.nl/lglaf)\n"
                 "Type a shell command to execute or \"exit\" to leave.",
                 file=sys.stderr)
         prompt = '# '
@@ -642,6 +660,22 @@ Format:\n\
 --proto 0x1000003 for version 3\n\
 --proto 0x1000018 for version 18")
 
+
+def set_dev_proto(args, BASE_PROTOCOL_VERSION):
+    """
+    """
+
+    if args.proto:
+        pattern = re.compile("^0x1([0-9]{6,6})$")
+        if not pattern.match(args.proto):
+            _logger.error("Wrong format (%s) for protocol version! Check --help." % args.proto)
+            return
+        hex_proto = int(args.proto,16)
+        _logger.debug("WARNING: Forcing protocol to %x" % hex_proto)
+        BASE_PROTOCOL_VERSION = hex_proto
+
+    return BASE_PROTOCOL_VERSION
+
 def main():
     args = parser.parse_args()
     logging.basicConfig(format='%(name)s: %(levelname)s: %(message)s',
@@ -652,15 +686,7 @@ def main():
     except: stdout_bin = sys.stdout
 
     global BASE_PROTOCOL_VERSION
-    if args.proto:
-        pattern = re.compile("^0x1([0-9]{6,6})$")
-        if not pattern.match(args.proto):
-            _logger.error("Wrong format (%s) for protocol version! Check --help." % args.proto)
-            return
-        hex_proto = int(args.proto,16)
-        _logger.debug("WARNING: Forcing protocol to %x" % hex_proto)
-        BASE_PROTOCOL_VERSION = hex_proto
-    DEV_PROTOCOL_VERSION = BASE_PROTOCOL_VERSION
+    DEV_PROTOCOL_VERSION = set_dev_proto(args, BASE_PROTOCOL_VERSION)
 
     if args.serial_path:
         comm = FileCommunication(args.serial_path)
@@ -668,14 +694,13 @@ def main():
         comm = autodetect_device(args.cr)
     
     _logger.debug("Trying protocol version: %07x" % DEV_PROTOCOL_VERSION)
+    set_protocol(comm, args.proto, args.skip_hello, DEV_PROTOCOL_VERSION)
+
     if not args.skip_hello:
-        try_hello(comm, DEV_PROTOCOL_VERSION)
         _logger.debug("Hello done, proceeding with commands")
 
-        if comm.protocol_negotiation:
-            try_hello(comm, DEV_PROTOCOL_VERSION=comm.protocol_version)
-
-    _logger.debug("Negotiated protocol version: 0x%x" % comm.protocol_version)
+        #if comm.protocol_negotiation:
+        #    set_protocol(comm, args.proto, DEV_PROTOCOL_VERSION=comm.protocol_version)
 
     with closing(comm):
         _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
