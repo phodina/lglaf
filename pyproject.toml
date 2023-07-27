@@ -1,0 +1,16 @@
+[project]
+name = "lglaf"
+version = "0.1"
+authors = [
+{ name="Peter Wu" , email="peter@lekensteyn.nl"},
+{ name="steadfasterX" , email="steadfasterX@gmail.com"},]
+description="LG Download Mode utility"
+readme="README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+	"License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/steadfasterX/lglaf"
