@@ -462,7 +462,7 @@ class USBCommunication(Communication):
     def write(self, data):
         # Reset read buffer for response
         if self.read_buffer:
-            _logger.warn('non-empty read buffer %r', self.read_buffer)
+            _logger.warning('non-empty read buffer %r', self.read_buffer)
             self.read_buffer = b''
         self.usbdev.write(self.ep_out, data)
     def close(self):
@@ -730,7 +730,7 @@ def main():
                         for i in range(0, len(header), 4)))
                 stdout_bin.write(response)
             except Exception as e:
-                _logger.warn(e)
+                _logger.warning(e)
                 if args.debug:
                     import traceback; traceback.print_exc()
 
